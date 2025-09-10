@@ -766,9 +766,9 @@ def main():
             for s in args.bench_target:
                 h, p = parse_hostport(s)
                 targets.append((h, p))
-            
-            if not targets:
-                targets = [("1.1.1.1", 443), ("8.8.8.8", 443)]
+        # Ensure we always have sane defaults if none were provided
+        if not targets:
+            targets = [("1.1.1.1", 443), ("8.8.8.8", 443)]
 
 		# Run threaded diagnostics with a live progress bar
         active = diagnostics_select(
@@ -780,6 +780,11 @@ def main():
             workers=args.diag_workers,
             bar_width=args.diag_bar_width
         )
+
+        # Guard: refuse to proceed if no working hops were found
+        if not active.get("hops"):
+            print("[diagnostics] no viable proxies found (empty chain). Check your list or targets.")
+            sys.exit(2)
 
         # Save results
         save_json(args.inventory, inv)   # updated metrics
@@ -805,6 +810,9 @@ def main():
             sys.exit(2)
         chain = {"hops": []}
         chain.update(use_chain)
+        if not chain.get("hops"):
+            print(f"[start] active chain is empty. Re-run --diagnostics with valid proxies.")
+            sys.exit(2)
     else:
         # Nothing else requested; show help
         ap.print_help()
@@ -841,11 +849,22 @@ def main():
 
     # Kill-switch watchdog
     probe_h, probe_p = parse_hostport(args.probe)
+    child_proc = None
     def killer():
         print("\n[!] Chain unhealthy. Terminating session to avoid leaks.")
         try:
-            os.killpg(0, 15)  # best-effort terminate our process group
-        except Exception:
+            if child_proc and child_proc.poll() is None:
+                try:
+                    pgid = os.getpgid(child_proc.pid)
+                    os.killpg(pgid, 15)
+                except Exception:
+                    try:
+                        child_proc.terminate()
+                    except Exception:
+                        pass
+        finally:
+            try: srv.stop()
+            except Exception: pass
             os._exit(1)
 
     wd = Watchdog(cc, probe=(probe_h, probe_p), interval=args.probe_interval, failures=args.probe_failures, killer=killer)
@@ -867,10 +886,12 @@ def main():
                 rc = 2
             else:
                 print(f"[exec] {' '.join(shlex.quote(x) for x in cmd)}")
-                rc = exec_once(env, cmd)
+                child_proc = subprocess.Popen(cmd, env=env, preexec_fn=os.setsid)
+                rc = child_proc.wait()
         else:
             print("[shell] launching proxied bash. Type 'exit' to quit.")
-            spawn_shell(env)
+            child_proc = subprocess.Popen(["/bin/bash", "--noprofile", "--norc"], env=env, preexec_fn=os.setsid)
+            rc = child_proc.wait()
     except KeyboardInterrupt:
         rc = 130
     except SystemExit as e:
