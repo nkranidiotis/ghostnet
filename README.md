@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="ghostnet.png" alt="GhostNet Banner" width="100%">
+</p>
+
 # 🕸️ GhostNet 
 
 > **Standalone Proxy Chaining & OPSEC Shell**
